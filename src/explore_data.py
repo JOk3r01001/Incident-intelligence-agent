@@ -23,7 +23,8 @@ con.execute("""
     FROM read_csv('data/olist_products_dataset.csv')
 """)
 
-# 4. Explore orders (our previous queries)
+
+# 4. Explore orders
 print("TOTAL ORDERS:")
 con.sql("SELECT COUNT(*) FROM orders").show()
 
@@ -116,6 +117,67 @@ con.sql("""
           BETWEEN '2017-11-17' AND '2017-11-30'
     GROUP BY order_date
     ORDER BY order_date
+""").show()
+
+# 10. Investigate Black Friday sales by category
+print("\nBLACK FRIDAY SALES BY CATEGORY:")
+
+con.sql("""
+    SELECT
+        p.product_category_name,
+        ROUND(SUM(i.price), 2) AS total_sales,
+        COUNT(DISTINCT o.order_id) AS total_orders
+    FROM orders AS o
+    INNER JOIN order_items AS i
+        ON o.order_id = i.order_id
+    INNER JOIN products AS p
+        ON i.product_id = p.product_id
+    WHERE o.order_status = 'delivered'
+      AND CAST(o.order_purchase_timestamp AS DATE) = '2017-11-24'
+    GROUP BY p.product_category_name
+    ORDER BY total_sales DESC
+    LIMIT 10
+""").show()
+
+# 12. Show black friday sales by category
+print("\nBLACK FRIDAY SALES BY CATEGORY:")
+
+con.sql("""
+    SELECT
+        p.product_category_name,
+        ROUND(SUM(i.price), 2) AS total_sales,
+        COUNT(DISTINCT o.order_id) AS total_orders
+    FROM orders AS o
+    INNER JOIN order_items AS i
+        ON o.order_id = i.order_id
+    INNER JOIN products AS p
+        ON i.product_id = p.product_id
+    WHERE o.order_status = 'delivered'
+      AND CAST(o.order_purchase_timestamp AS DATE) = '2017-11-24'
+    GROUP BY p.product_category_name
+    ORDER BY total_sales DESC
+    LIMIT 10
+""").show()
+
+
+# 13. Show all tables in the database
+print("\nTABLES IN THE DATABASE:")
+con.sql("SHOW TABLES").show()
+
+# 14. Investigate product categories
+print("\nPRODUCT CATEGORY INVESTIGATION:")
+
+con.sql("""
+    SELECT
+        o.order_id,
+        i.price,
+        p.product_category_name
+    FROM orders AS o
+    INNER JOIN order_items AS i
+        ON o.order_id = i.order_id
+    INNER JOIN products AS p
+        ON i.product_id = p.product_id
+    LIMIT 10
 """).show()
 
 
