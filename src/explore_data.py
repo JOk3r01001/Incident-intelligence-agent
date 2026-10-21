@@ -16,7 +16,14 @@ con.execute("""
     FROM read_csv('data/olist_order_items_dataset.csv')
 """)
 
-# 3. Explore orders (our previous queries)
+# 3. Load products
+con.execute("""
+    CREATE OR REPLACE TABLE products AS
+    SELECT *
+    FROM read_csv('data/olist_products_dataset.csv')
+""")
+
+# 4. Explore orders (our previous queries)
 print("TOTAL ORDERS:")
 con.sql("SELECT COUNT(*) FROM orders").show()
 
@@ -28,7 +35,7 @@ con.sql("""
     ORDER BY total_orders DESC
 """).show()
 
-# 4. Explore relationships using JOIN
+# 5. Explore relationships using JOIN
 print("\nJOINED DATA:")
 con.sql("""
     SELECT
@@ -45,7 +52,7 @@ con.sql("""
 print("\nDAILY SALES ANALYTICS:")
 
 
-# 5. Daily sales analytics
+# 6. Daily sales analytics
 con.sql("""
     SELECT
         CAST(o.order_purchase_timestamp AS DATE) AS order_date,
@@ -59,7 +66,7 @@ con.sql("""
     LIMIT 15
 """).show()
 
-# 6. Investigate January 2017 sales
+# 7. Investigate January 2017 sales
 print("\nJANUARY 2017 SALES INVESTIGATION:")
 
 con.sql("""
@@ -77,7 +84,7 @@ con.sql("""
     ORDER BY order_date
 """).show()
 
-# 7. Investigate anomalies in daily sales
+# 8. Investigate anomalies in daily sales
 print("\nDETECTED ANOMALIES:")
 
 con.sql("""
@@ -89,7 +96,7 @@ con.sql("""
 
 
 
-# 8. Investigate Black Friday sales  
+# 9. Investigate Black Friday sales  
 print("\nBLACK FRIDAY INVESTIGATION:")
 
 con.sql("""
@@ -110,8 +117,6 @@ con.sql("""
     GROUP BY order_date
     ORDER BY order_date
 """).show()
-
-
 
 
 con.close()
