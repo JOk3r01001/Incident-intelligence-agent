@@ -85,7 +85,27 @@ con.sql("""
     ORDER BY order_date
 """).show()
 
-# 8. Investigate anomalies in daily sales
+
+# 8. Compare Friday sales in November 2017
+print("\nNOVEMBER 2017 FRIDAY SALES:")
+
+con.sql("""
+    SELECT
+        CAST(o.order_purchase_timestamp AS DATE) AS order_date,
+        ROUND(SUM(i.price), 2) AS total_sales,
+        COUNT(DISTINCT o.order_id) AS total_orders
+    FROM orders AS o
+    INNER JOIN order_items AS i
+        ON o.order_id = i.order_id
+    WHERE o.order_status = 'delivered'
+      AND DAYNAME(o.order_purchase_timestamp) = 'Friday'
+      AND CAST(o.order_purchase_timestamp AS DATE)
+          BETWEEN '2017-11-01' AND '2017-11-30'
+    GROUP BY order_date
+    ORDER BY order_date
+""").show()
+
+# 9. Investigate anomalies in daily sales
 print("\nDETECTED ANOMALIES:")
 
 con.sql("""
@@ -97,7 +117,7 @@ con.sql("""
 
 
 
-# 9. Investigate Black Friday sales  
+# 10. Investigate Black Friday sales  
 print("\nBLACK FRIDAY INVESTIGATION:")
 
 con.sql("""
