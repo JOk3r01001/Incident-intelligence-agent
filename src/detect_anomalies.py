@@ -23,7 +23,10 @@ daily_sales = con.execute("""
     ORDER BY order_date
 """).fetchall()
 
+
 con.close()
+
+
 
 # Store the previous 4 values for each weekday
 history = defaultdict(lambda: deque(maxlen=WINDOW_SIZE))
@@ -60,3 +63,24 @@ for date, actual, expected, deviation in anomalies[:10]:
         f"Expected: {expected:.2f} | "
         f"Deviation: {deviation:+.2f}%"
     )
+
+# Save detected anomalies to DuckDB
+con = duckdb.connect("data/incident_intelligence.duckdb")
+
+con.execute("""
+    CREATE OR REPLACE TABLE detected_anomalies (
+        order_date DATE,
+        actual_sales DOUBLE,
+        expected_sales DOUBLE,
+        deviation_pct DOUBLE
+    )
+""")
+
+con.executemany("""
+    INSERT INTO detected_anomalies
+    VALUES (?, ?, ?, ?)
+""", anomalies)
+
+con.close()
+
+print("Anomalies saved to duckdb")
