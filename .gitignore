@@ -36,6 +36,10 @@ reports/
 *.log
 .aws/
 .codex/
+# Keep local tests and coding-agent instructions out of published files.
+/tests/
+/AGENTS.md
+/CODEX_TASK.md
 build/
 dist/
 *.egg-info/
