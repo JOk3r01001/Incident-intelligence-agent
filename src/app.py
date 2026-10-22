@@ -5,7 +5,51 @@ import pandas as pd
 import streamlit as st
 
 from agent_tools import get_dataset_summary, get_sales_window, list_anomalies
-from incident_agent import BACKEND, MODEL, MAX_QUESTION_CHARS, InvestigationError, ask_agent, discuss, investigate
+from incident_agent import BACKEND, MODEL, MAX_QUESTION_CHARS, TOOLS, InvestigationError, ask_agent, discuss, investigate
+
+
+def render_graphs(trace: list[dict]) -> None:
+    """Render only graphs actually produced by the validated Python tool.
+
+    Neither generated prose nor model-supplied code/specifications are rendered
+    as charts. The result data lives in session state with the reply's audit log.
+    """
+    for entry in trace:
+        if entry["source"] != "model" or entry["status"] != "ok" or entry["tool"] != "create_graph":
+            continue
+        graph = entry["result"]
+        st.markdown(f"**{graph['title']}**")
+        if not graph["data"]:
+            st.info(graph["note"])
+            continue
+        df = pd.DataFrame(graph["data"])
+        if graph["chart_type"] == "line":
+            df[graph["x"]] = pd.to_datetime(df[graph["x"]])
+            st.line_chart(df.set_index(graph["x"])[graph["y"]], y_label=graph["y_label"])
+        else:
+            st.bar_chart(df.set_index(graph["x"])[graph["y"]], y_label=graph["y_label"])
+        st.caption(graph["note"] + (" Additional categories/statuses were omitted by the requested limit."
+                                    if graph["truncated"] else ""))
+
+
+def render_agent_guide() -> None:
+    """Keep the in-app tool list synchronized with the execution allowlist."""
+    with st.expander("About the agent and its tools"):
+        st.write("Ask for unusual sales days, an investigation, comparisons, or a graph. "
+                 "A local Qwen model chooses analytical tools; Python validates the arguments, "
+                 "queries DuckDB read-only, and displays the evidence, graph, and tool audit trail.")
+        st.write("Anomalies are stored flags from a detector comparing each day with the median "
+                 "of four prior matching weekdays (at least 30% deviation). The model interprets "
+                 "the evidence; suggested causes remain hypotheses. Sales are item prices excluding freight.")
+        st.table(pd.DataFrame([{"Tool": name, "Purpose": (fn.__doc__ or "").strip().splitlines()[0]}
+                               for name, fn in TOOLS.items()]))
+        st.write("Graphs support daily sales, delivered orders, average order value, category sales, "
+                 "and final order statuses, for up to 90 days and 15 categories/statuses. "
+                 "Try: ‘Plot daily sales for November 2017’ or ‘Graph the top categories for that day.’")
+        st.caption("Dataset coverage/counts are seeded context; source=model identifies tools selected "
+                   "by Qwen. Conversation memory is limited and session-only. Native Ollama and optional "
+                   "LangChain use the same local model and validated tool loop. Campaign causes, profit, "
+                   "delivery delays, and live incidents cannot be established from these tools alone.")
 
 
 def render_conversation(conversation: list[dict], error_label: str = "Follow-up failed") -> None:
@@ -21,6 +65,7 @@ def render_conversation(conversation: list[dict], error_label: str = "Follow-up 
                 st.markdown(exchange["answer"])
             st.caption(f"{exchange['elapsed_seconds']:.1f}s · {exchange['model']} via {exchange['backend']}")
             trace = exchange["trace"]
+            render_graphs(trace)
             calls = sum(row["source"] == "model" for row in trace)
             seeds = sum(row["source"] == "seeded" for row in trace)
             with st.expander(f"Reply evidence ({seeds} seeded lookups, {calls} model-selected calls)"):
@@ -30,7 +75,7 @@ def render_conversation(conversation: list[dict], error_label: str = "Follow-up 
 def agent_workspace() -> None:
     """Let the model discover and investigate dates through conversation."""
     st.subheader("Ask the agent")
-    st.write("Ask me to find unusual sales days, investigate the largest spike, or compare anomalies.")
+    st.write("Ask me to find unusual sales days, investigate a spike, compare anomalies, or create a graph.")
     st.caption('Try: “Find the five biggest sales spikes in November 2017” → '
                '“Investigate the one with the highest item sales” → “Could a promotion explain it?”')
     try:
@@ -69,6 +114,7 @@ def agent_workspace() -> None:
         conversation.append(exchange)
         del conversation[:-12]
     render_conversation(conversation, error_label="Agent reply failed")
+    render_agent_guide()
     st.caption("Historical Olist data · Statistical anomalies are not automatically business incidents.")
 
 st.set_page_config(page_title="Incident Intelligence", page_icon="🔎", layout="wide")
@@ -152,6 +198,7 @@ if result and result["date"] == selected:
         st.subheader("Investigation report")
         st.markdown(result["report"])
     trace = result["trace"]
+    render_graphs(trace)
     # Seeded lookups provide context; only source='model' denotes model tool choices.
     seeded = sum(row["source"] == "seeded" for row in trace)
     model_calls = sum(row["source"] == "model" for row in trace)
@@ -195,4 +242,5 @@ if result and result["date"] == selected:
 with st.expander("Anomaly records"):
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+render_agent_guide()
 st.caption("Historical Olist data · Indicative item sales, not recognized revenue · Statistical anomalies are not automatically incidents.")

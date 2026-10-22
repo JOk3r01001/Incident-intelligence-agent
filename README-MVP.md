@@ -7,6 +7,9 @@ framework is required.
 See [README.md](README.md) for the portfolio overview and
 [docs/LANGCHAIN.md](docs/LANGCHAIN.md) for the optional, implemented LangChain
 backend. Native Ollama remains the default and does not require LangChain.
+The [complete agent guide](docs/AGENT_GUIDE.md) explains the workflow, detector,
+all eight model tools, graph types, adapters, memory, and limits. The app also has
+an **About the agent and its tools** panel generated from the actual tool allowlist.
 
 ## Launch on Linux
 
@@ -58,9 +61,10 @@ Total sales growth does not imply higher average order value.
 This searches precomputed statistical flags; it does not rerun detection, mutate
 the database, monitor live sales, or establish that a flag is a business incident.
 
-One dataset-summary lookup is marked `source: seeded`; discovery must include a
-successful **model-selected** `find_anomalies` call. A metadata count or generated
-list alone does not qualify. Later explanatory replies may reuse saved evidence
+One dataset-summary lookup is marked `source: seeded`; discovery uses a successful
+**model-selected** `find_anomalies` call. A first graph request can instead call
+`create_graph` directly. A metadata count or generated list alone does not qualify
+as discovery. Later explanatory replies may reuse saved evidence
 with no new model-selected calls. Empty searches return an explicit no-match
 result; an empty anomaly table still supports chat. Errors retain the evidence
 collected before failure. A malformed chat answer gets at most one formatting
@@ -72,6 +76,40 @@ exchanges remains available even when its older conversational wording leaves
 the recent-message window. The independent **Explore a date** workspace retains the original
 dashboard: select a date there and click **Investigate with local AI** when you
 want to inspect a known day. No such selection is needed in **Ask the agent**.
+
+## Ask for graphs
+
+For example, ask “Plot daily sales from 2017-11-01 to 2017-11-30,” then “Graph the
+top five categories on the day with the highest sales,” then “Show order statuses
+for that same day.” Graphs work as a first message or as investigation follow-ups.
+
+The model selects `create_graph(graph_type, start_date, end_date=None, limit=10)`:
+
+| `graph_type` | Values plotted |
+| --- | --- |
+| `daily_sales` | Daily delivered-order item sales |
+| `daily_orders` | Daily distinct delivered orders with item records |
+| `daily_average_order_value` | Daily item sales divided by distinct delivered orders |
+| `category_sales` | Leading categories by delivered-order item sales |
+| `order_status` | All orders by final recorded status |
+
+Date ranges are inclusive, at most **90 days**. Omit `end_date` for one day.
+Categories/statuses are limited to **1–15**, with a truncation notice when needed.
+Multiple daily observations use a line; single points and category/status data
+use bars. No matching data or unknown prices produce an explanation, not invented
+points. Missing dates are omitted, and categories outside a top-N result are unknown.
+
+Graphs are built from fixed parameterized queries and rendered by Streamlit's
+existing charts. Model text, arbitrary SQL, plotting code, and custom executable
+chart specifications cannot create plots. The full data stays with the reply's
+audit trace; Qwen gets metadata, min/max, and a labeled preview of five points.
+
+Graph turns use a short focused prompt and verified prior results, omitting old
+assistant interpretations to keep the small model on the current request. For
+explicit English graph commands, completion requires a valid graph-tool result
+when dates are known, and clear metric words constrain the graph kind. Missing
+dates can prompt clarification. Failed final inference leaves any already-created
+graph available next to the error/trace. Clearing chat removes its graphs.
 
 ## Discuss an investigation
 
@@ -269,6 +307,10 @@ the read-only `agent_tools.py`. Earlier versions remain available in Git history
 
 ## Verification
 
+The development test suite is local-only and is not included in the published
+repository. The test commands below require those local files. For a fresh clone,
+use the CLI smoke test at the end of this section instead.
+
 Fast offline tests require no Ollama service and only create temporary databases:
 
 ```bash
@@ -304,6 +346,8 @@ INCIDENT_BACKEND=native INCIDENT_MODEL=qwen3:4b-instruct python tests/live_smoke
 INCIDENT_BACKEND=langchain INCIDENT_MODEL=qwen3:4b-instruct python tests/live_smoke.py
 INCIDENT_BACKEND=native INCIDENT_MODEL=qwen3:4b-instruct python tests/live_discovery.py
 INCIDENT_BACKEND=langchain INCIDENT_MODEL=qwen3:4b-instruct python tests/live_discovery.py
+INCIDENT_BACKEND=native INCIDENT_MODEL=qwen3:4b-instruct python tests/live_graphs.py
+INCIDENT_BACKEND=langchain INCIDENT_MODEL=qwen3:4b-instruct python tests/live_graphs.py
 ```
 
 `live_smoke.py` drives the Streamlit button using Streamlit's AppTest harness, requires a
@@ -325,13 +369,23 @@ The optional CLI still supports a known-date smoke test:
 python src/incident_agent.py 2017-11-24
 ```
 
-Recorded checks on October 22, 2026: **88 offline tests passed** in about 11
+Recorded checks on October 22, 2026: **113 offline tests passed** in about 12
 seconds with optional dependencies installed, including native and LangChain
 adapters, matching tool-call IDs, allowlist enforcement, error recovery, and
 tracing isolation. The new chat tests include a category falling in rank while
 its absolute sales increase, checking that Python supplies the correct comparison.
 Discovery tests also verify the calculated weighted AOV direction, rather than
 inferring average order value from total sales or the detector's sales baseline.
+Graph tests cover all five kinds, actual rendered chart values, inclusive date
+ranges, unknown/empty data, distinct counts, requested metric/range enforcement,
+small model previews, session persistence, clarification, error recovery, and
+both adapters. The live three-graph workflow passed with `qwen3:4b-instruct`
+through LangChain (14.3 seconds total) and native Ollama (13.5 seconds total).
+It created November's daily sales line, resolved its peak date for a top-five
+category bar chart, and plotted final order statuses for that day. Actual chart
+payload values matched read-only queries and the database hash stayed unchanged.
+After the graph changes, the original chat-first discovery/investigation/follow-up
+regression also passed through LangChain (16.6 seconds), with an unchanged DB hash.
 A fresh import of the three real Olist CSVs into a temporary
 database reproduced all 221 stored anomalies (dates and numerical values within
 0.000001) and the known November 24 metrics. The existing database was checked

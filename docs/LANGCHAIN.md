@@ -43,7 +43,7 @@ an explicit `ModelClient` is injected. Both adapters implement
 
 `ask_agent(question, *, history=None, max_rounds=7, client=None)` is the chat-first
 entry point. It seeds only dataset coverage/counts, requires a real model-selected
-anomaly search in a fresh conversation, and retains the latest successful search
+anomaly search or requested graph in a fresh data turn, and retains the latest successful search
 for references such as “the first one.” The search tool has bounded pagination,
 date/direction filters, and allowlisted sort choices; all values are parameters.
 It queries stored statistical flags and never changes or regenerates the database.
@@ -77,6 +77,12 @@ question/answer pairs with application-assigned roles. Historical tool messages
 are supplied as evidence objects, avoiding orphaned tool-call IDs. New assistant
 proposals and their tool results retain matching IDs through both adapters.
 User suggestions and generated text are never promoted to database evidence.
+Graph requests select the same `create_graph` callable through either adapter.
+The trace/UI retain the complete chart result; model messages contain chart
+metadata, min/max, and a labeled five-point preview. `ToolMessage` IDs still match
+the assistant proposals. Streamlit renders fixed chart descriptions from actual
+rows; no model-authored plotting code is executed. A shorter graph prompt and
+prior user questions/evidence replace old assistant prose for those turns.
 For category comparisons, Python computes sales direction only for categories
 actually returned on both dates and supplies these observations to the model.
 This separates ranking changes from absolute sales changes and treats omitted
@@ -112,12 +118,19 @@ behavior. These limits add no new dependencies or model capabilities.
 
 ## Verification
 
+The development test files are kept locally and are not published. These test
+commands require that local checkout. A fresh installation can instead run
+`INCIDENT_BACKEND=langchain python src/incident_agent.py 2017-11-24`
+from the repository root with its database and Ollama available.
+
 ```bash
 python -m unittest discover -s tests -v
 INCIDENT_BACKEND=native INCIDENT_MODEL=qwen3:4b-instruct python tests/live_smoke.py
 INCIDENT_BACKEND=langchain INCIDENT_MODEL=qwen3:4b-instruct python tests/live_smoke.py
 INCIDENT_BACKEND=native INCIDENT_MODEL=qwen3:4b-instruct python tests/live_discovery.py
 INCIDENT_BACKEND=langchain INCIDENT_MODEL=qwen3:4b-instruct python tests/live_discovery.py
+INCIDENT_BACKEND=native INCIDENT_MODEL=qwen3:4b-instruct python tests/live_graphs.py
+INCIDENT_BACKEND=langchain INCIDENT_MODEL=qwen3:4b-instruct python tests/live_graphs.py
 python -m pip check
 ```
 
@@ -132,7 +145,7 @@ browser layout. `live_discovery.py` additionally tests the default chat workspac
 model-selected anomaly search, “investigate the first one” without a supplied
 date, real daily/history/category calls, a hypothesis follow-up, and persistence.
 
-On October 22, 2026, all 88 offline tests passed (including safe data preparation,
+On October 22, 2026, all 113 offline tests passed (including safe data preparation,
 discovery, and conversational follow-ups) with langchain-ollama 1.1.0, langchain-core 1.6.13,
 and langsmith 0.14.12 on Python 3.14.8. The complete real Streamlit chat-first
 workflow (discovery, reference-based investigation, hypothesis follow-up, and
@@ -141,5 +154,11 @@ Both used qwen3:4b-instruct, selected real analytical tools, retained the discus
 and left the database unchanged. These timings are not a controlled performance
 comparison. Generated prose can still mislabel rankings or overstate evidence;
 the accurate Python-rendered evidence and raw tool results remain available for review.
+
+The separate three-graph integration passed through LangChain (14.3 seconds)
+and native Ollama (13.5 seconds), verifying model-selected graph calls, actual
+plotted values, reference-based date resolution, and rerun persistence. The
+database hash remained unchanged. See [AGENT_GUIDE.md](AGENT_GUIDE.md) for the
+complete tool catalog and graph behavior, including empty data and context limits.
 
 Reference: [LangChain's official ChatOllama integration](https://docs.langchain.com/oss/python/integrations/chat/ollama).

@@ -20,6 +20,8 @@ verified report renderer. Native Ollama remains the default.
 - Retain the report, tool results, model name, and elapsed time across UI reruns.
 - Discuss the investigation in chat: test a hypothesis, compare dates, and inspect
   each reply's additional tool calls and database evidence.
+- Request database-backed graphs of daily sales/orders/AOV, category sales, or
+  order statuses; keep them with the reply across reruns.
 - Report unavailable models, timeouts, invalid calls, and missing data explicitly.
 
 ## Run locally
@@ -42,6 +44,11 @@ Open <http://localhost:8501>. **Ask the agent** is the default workspace. Try:
 2. “Investigate the first one.”
 3. “Could a promotion explain that? What evidence would test it?”
 
+For graphs, ask “Plot daily sales for November 2017,” then “Graph the top five
+categories on the day with the highest sales.” The model selects `create_graph`;
+Streamlit plots actual query results. Graph requests also work as the first message.
+Open **About the agent and its tools** in the app for a quick explanation.
+
 The model selects the read-only `find_anomalies` tool, then analytical tools for
 the dates it discovers. Python renders the actual search results and numerical
 evidence; each reply includes a tool audit trail. **New conversation** clears the
@@ -56,6 +63,8 @@ tool calls; no additional call is claimed when the agent reuses context.
 See [README-MVP.md](README-MVP.md) for virtual-environment setup, Ollama service
 checks, model selection, missing-data guidance, and test commands. Raw datasets,
 the generated database, and model weights are intentionally excluded from Git.
+The [complete agent guide](docs/AGENT_GUIDE.md) explains the detector, every tool,
+graph options, model/adapter responsibilities, memory, safety limits, and testing.
 
 ## Use LangChain
 
@@ -110,10 +119,16 @@ is disabled, and the base installation remains independent of LangChain.
 
 ## Test
 
+The development test suite is kept locally and is not included in this repository.
+The commands below require that local checkout. To check a fresh installation,
+run `python src/incident_agent.py 2017-11-24` with your database and Ollama available.
+
 ```bash
 python -m unittest discover -s tests -v
 INCIDENT_BACKEND=native INCIDENT_MODEL=qwen3:4b-instruct python tests/live_discovery.py
 INCIDENT_BACKEND=langchain INCIDENT_MODEL=qwen3:4b-instruct python tests/live_discovery.py
+INCIDENT_BACKEND=native INCIDENT_MODEL=qwen3:4b-instruct python tests/live_graphs.py
+INCIDENT_BACKEND=langchain INCIDENT_MODEL=qwen3:4b-instruct python tests/live_graphs.py
 ```
 
 The first command uses temporary DuckDB fixtures and fake model responses. Optional
