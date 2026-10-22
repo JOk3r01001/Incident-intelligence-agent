@@ -2,6 +2,7 @@
 from datetime import date as Date
 from pathlib import Path
 from statistics import mean, median
+from typing import Literal
 
 import duckdb
 
@@ -22,6 +23,7 @@ def _validated_date(day: str) -> str:
 
 
 def _bounded_integer(value: int, name: str, maximum: int) -> int:
+    # bool is an int subclass; reject it along with coerced strings/floats.
     if type(value) is not int or not 1 <= value <= maximum:
         raise ValueError(f"{name} must be an integer between 1 and {maximum}.")
     return value
@@ -31,8 +33,9 @@ def _connect():
     if not DB_PATH.is_file():
         raise FileNotFoundError(
             f"DuckDB database not found: {DB_PATH}. "
-            "Run 'python src/explore_data.py' from the project root first."
+            "Run 'python src/prepare_data.py' from the project root first."
         )
+    # Enforce read-only access at the database boundary, beyond the tool allowlist.
     con = duckdb.connect(str(DB_PATH), read_only=True)
     required = {"orders", "order_items", "products", "detected_anomalies"}
     missing = required - {row[0] for row in con.execute("SHOW TABLES").fetchall()}
@@ -40,8 +43,9 @@ def _connect():
         con.close()
         raise RuntimeError(
             f"DuckDB is missing tables: {', '.join(sorted(missing))}. "
-            "Restore the prepared Olist database; if only detected_anomalies is missing, "
-            "run 'python src/detect_anomalies.py' from the repository root."
+            "Restore a prepared Olist database, or use 'python src/prepare_data.py "
+            "--db data/rebuilt.duckdb' to build a separate database from CSVs. "
+            "Existing databases are never overwritten by the setup command."
         )
     return con
 
@@ -54,6 +58,7 @@ def get_anomaly(day: str) -> dict:
     """
     day = _validated_date(day)
     with _connect() as con:
+        # Bind values separately from SQL; model text never becomes executable SQL.
         row = con.execute(
             """SELECT actual_sales, expected_sales, deviation_pct
                FROM detected_anomalies WHERE order_date = ?""",
@@ -76,6 +81,8 @@ def get_daily_metrics(day: str) -> dict:
         day: The date to analyze in YYYY-MM-DD format.
     """
     day = _validated_date(day)
+    # The join repeats orders with multiple items: count distinct order IDs.
+    # Group by purchase date and final recorded status, not delivery date.
     with _connect() as con:
         row = con.execute(
             """SELECT SUM(i.price), COUNT(DISTINCT o.order_id), COUNT(*)
@@ -103,6 +110,7 @@ def get_weekday_history(day: str, weeks: int = 4) -> dict:
     """
     day = _validated_date(day)
     weeks = _bounded_integer(weeks, "weeks", 8)
+    # Strictly earlier dates prevent the selected anomaly contaminating its baseline.
     with _connect() as con:
         rows = con.execute(
             """SELECT CAST(o.order_purchase_timestamp AS DATE) AS order_date,
@@ -144,6 +152,7 @@ def get_sales_by_category(day: str, limit: int = 10) -> dict:
     """
     day = _validated_date(day)
     limit = _bounded_integer(limit, "limit", 15)
+    # A left join retains sales whose product/category metadata is missing.
     with _connect() as con:
         rows = con.execute(
             """SELECT COALESCE(p.product_category_name, 'unknown') AS category,
@@ -204,6 +213,66 @@ def list_anomalies() -> list[dict]:
          "deviation_pct": round(float(r[3]), 2)}
         for r in rows
     ]
+
+
+def get_dataset_summary() -> dict:
+    """Get historical date coverage, order count, and stored anomaly count."""
+    with _connect() as con:
+        first, last, orders = con.execute("""SELECT MIN(CAST(order_purchase_timestamp AS DATE)),
+            MAX(CAST(order_purchase_timestamp AS DATE)), COUNT(*) FROM orders""").fetchone()
+        anomalies = con.execute("SELECT COUNT(*) FROM detected_anomalies").fetchone()[0]
+    return {"first_order_date": first.isoformat() if first else None,
+            "last_order_date": last.isoformat() if last else None,
+            "orders": int(orders), "stored_anomalies": int(anomalies),
+            "note": "Historical data. Anomalies are stored statistical flags, not confirmed incidents."}
+
+
+def find_anomalies(start_date: str | None = None, end_date: str | None = None,
+                   direction: Literal["both", "spikes", "drops"] = "both",
+                   sort_by: Literal["deviation", "sales", "date"] = "deviation",
+                   limit: int = 5, offset: int = 0) -> dict:
+    """Find stored sales anomalies with optional date filters and bounded pagination.
+
+    Args:
+        start_date: Inclusive first date in YYYY-MM-DD format, or omit for all history.
+        end_date: Inclusive last date in YYYY-MM-DD format, or omit for all history.
+        direction: both, spikes (positive deviation), or drops (negative deviation).
+        sort_by: deviation (absolute percentage), sales (actual item sales), or date (newest first).
+        limit: Number of anomalies to return, from 1 to 10.
+        offset: Number of matching anomalies to skip, from 0 to 10000.
+    """
+    start_date = _validated_date(start_date) if start_date is not None else None
+    end_date = _validated_date(end_date) if end_date is not None else None
+    if start_date and end_date and start_date > end_date:
+        raise ValueError("start_date must be on or before end_date.")
+    if direction not in ("both", "spikes", "drops"):
+        raise ValueError("direction must be 'both', 'spikes', or 'drops'.")
+    ordering = {"deviation": "ABS(deviation_pct) DESC, order_date DESC",
+                "sales": "actual_sales DESC, order_date DESC", "date": "order_date DESC"}
+    if not isinstance(sort_by, str) or sort_by not in ordering:
+        raise ValueError("sort_by must be 'deviation', 'sales', or 'date'.")
+    limit = _bounded_integer(limit, "limit", 10)
+    if type(offset) is not int or not 0 <= offset <= 10000:
+        raise ValueError("offset must be an integer between 0 and 10000.")
+    # All user/model values are bound parameters. Only an allowlisted ORDER BY
+    # fragment is interpolated; the model cannot supply SQL or rewrite the detector.
+    where = """WHERE (CAST(? AS DATE) IS NULL OR order_date >= CAST(? AS DATE))
+        AND (CAST(? AS DATE) IS NULL OR order_date <= CAST(? AS DATE))
+        AND (? = 'both' OR (? = 'spikes' AND deviation_pct > 0)
+             OR (? = 'drops' AND deviation_pct < 0))"""
+    params = [start_date, start_date, end_date, end_date, direction, direction, direction]
+    with _connect() as con:
+        total = con.execute("SELECT COUNT(*) FROM detected_anomalies " + where, params).fetchone()[0]
+        rows = con.execute("SELECT order_date, actual_sales, expected_sales, deviation_pct "
+                           "FROM detected_anomalies " + where + f" ORDER BY {ordering[sort_by]} LIMIT ? OFFSET ?",
+                           params + [limit, offset]).fetchall()
+    return {"anomalies": [{"date": row[0].isoformat(), "actual_sales": round(float(row[1]), 2),
+                           "expected_sales": round(float(row[2]), 2), "deviation_pct": round(float(row[3]), 2)}
+                          for row in rows],
+            "total_matches": int(total), "limit": limit, "offset": offset,
+            "has_more": offset + len(rows) < total, "sort_by": sort_by, "direction": direction,
+            "start_date": start_date, "end_date": end_date,
+            "note": "Stored detector flags; percentage deviation is not business impact or proof of an incident."}
 
 
 def get_sales_window(day: str) -> list[dict]:

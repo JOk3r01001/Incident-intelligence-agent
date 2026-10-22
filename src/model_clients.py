@@ -1,4 +1,4 @@
-"""Small model boundary shared by the native MVP and a future LangChain adapter.
+"""Small model boundary shared by native Ollama and optional LangChain adapters.
 
 Adapters select tools and return text. Only incident_agent dispatches allowlisted
 tools, enforces budgets, and renders verified findings.
@@ -17,6 +17,7 @@ class ModelClientError(RuntimeError):
 
 @dataclass(frozen=True)
 class ToolCall:
+    """Provider-neutral proposal; the agent validates it before running any tool."""
     name: str
     arguments: dict[str, Any]
     id: str = field(default_factory=lambda: uuid4().hex)
@@ -36,6 +37,16 @@ class ModelClient(Protocol):
         ...
 
 
+def create_model_client(model: str, backend: str = "native") -> ModelClient:
+    if backend == "native":
+        return OllamaModelClient(model)
+    if backend == "langchain":
+        # Native users need neither the optional packages nor their import overhead.
+        from langchain_client import LangChainOllamaClient
+        return LangChainOllamaClient(model)
+    raise ModelClientError("INCIDENT_BACKEND must be 'native' or 'langchain'.")
+
+
 class OllamaModelClient:
     """Native Ollama transport; no LangChain dependency or import is needed."""
 
@@ -45,6 +56,7 @@ class OllamaModelClient:
     def invoke(self, messages: list[dict[str, Any]], *, tools: Sequence[Callable],
                timeout: float) -> ModelReply:
         native_messages = []
+        # Ollama expects nested function schemas; the shared loop uses a flat shape.
         for message in messages:
             native = {key: value for key, value in message.items() if key != "tool_call_id"}
             if message.get("tool_calls"):
@@ -54,11 +66,13 @@ class OllamaModelClient:
                 ]
             native_messages.append(native)
         try:
+            # Ignore proxy environment variables for this local-only transport.
             with Client(timeout=httpx.Timeout(timeout, connect=min(3, timeout)),
                         trust_env=False) as client:
                 reply = ChatResponse.model_validate(client.chat(
                     model=self.model, messages=native_messages, tools=list(tools),
                     think=False, stream=False, keep_alive="5m",
+                    # Bound context/output for the target laptop's memory and latency.
                     options={"temperature": 0.6, "top_p": 0.95, "top_k": 20,
                              "num_ctx": 4096, "num_predict": 3072},
                 ))

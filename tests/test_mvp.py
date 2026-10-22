@@ -61,6 +61,9 @@ class DatabaseCase(unittest.TestCase):
         self.env_patch = patch.dict("os.environ", {"INCIDENT_TIMEOUT_SECONDS": "90"})
         self.env_patch.start()
         self.addCleanup(self.env_patch.stop)
+        self.backend_patch = patch.object(agent, "BACKEND", "native")
+        self.backend_patch.start()
+        self.addCleanup(self.backend_patch.stop)
 
     def mock_client(self, responses):
         client_patch = patch.object(model_clients, "Client")
@@ -312,7 +315,8 @@ class AgentTests(DatabaseCase):
 
 class DashboardTests(DatabaseCase):
     def app(self):
-        return AppTest.from_file(str(ROOT / "src" / "app.py"), default_timeout=15).run()
+        app = AppTest.from_file(str(ROOT / "src" / "app.py"), default_timeout=15).run()
+        return app.radio[0].set_value("Explore a date").run()
 
     def test_button_runs_real_backend_with_mock_model_and_persists_report(self):
         self.mock_client([reply(calls=[("get_sales_by_category", {"day": DAY, "limit": 1})]), reply(REPORT)])

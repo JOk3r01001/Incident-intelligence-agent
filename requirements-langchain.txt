@@ -1,0 +1,2 @@
+-r requirements-mvp.txt
+langchain-ollama>=1.1,<2

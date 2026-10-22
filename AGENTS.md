@@ -1,15 +1,14 @@
 # Incident Intelligence Agent — repository instructions for Codex
 
 ## Project goal
-Ship a small, working, local-first portfolio MVP that investigates anomalies in historical Brazilian e-commerce (Olist) data. A Streamlit user selects an anomaly; a local Ollama-hosted LLM uses **read-only, parameterized Python/DuckDB tools** to investigate and returns a concise, evidence-based report plus a transparent tool-call log.
+Ship a small, working, local-first portfolio MVP that investigates anomalies in historical Brazilian e-commerce (Olist) data. A Streamlit user asks the local Ollama-hosted LLM to discover and investigate anomalies using **read-only, parameterized Python/DuckDB tools**, with concise evidence-based answers and a transparent tool-call log. Manual date exploration remains optional; selecting an anomaly must not be required for chat or discovery.
 
 ## Existing implementation (inspect, don't assume)
 Likely project files:
-- `src/explore_data.py` — imports Olist CSVs into persistent DuckDB tables.
-- `src/detect_anomalies.py` — identifies deviations and stores `detected_anomalies`.
-- `src/analytics.py` — earlier reusable analytics functions.
+- `src/prepare_data.py` — safely imports CSVs and detects anomalies for new databases; checks existing databases read-only. Replaces the original exploratory importer and detector.
 - `src/agent_tools.py` — database tools exposed to the agent.
 - `src/incident_agent.py` — Ollama chat/tool-call loop.
+- `src/model_clients.py` and `src/langchain_client.py` — native and optional LangChain model adapters.
 - `src/app.py` — Streamlit UI.
 - `requirements-mvp.txt` and `README-MVP.md` — current MVP setup.
 
@@ -48,6 +47,7 @@ Example known-good source observation for 2017-11-24 (delivered orders, sum of o
 
 ## MVP acceptance criteria
 - From the repo root, the Streamlit app starts and lists actual stored anomalies (when database is present).
+- The default chat can find actual stored anomalies through a model-selected search and investigate a returned result without the user supplying or selecting its date.
 - Clicking **Investigate with local AI** runs the backend `investigate(selected_date)` and displays its report and trace, or an actionable error.
 - The agent can execute at least one **model-selected** read-only tool and incorporate its results into the report. A pre-populated trace alone does not qualify.
 - Investigating `2017-11-24` yields correct metrics (R$149,916.58 item sales, 1,147 distinct delivered orders) and an appropriately cautious discussion of the Black Friday spike.
