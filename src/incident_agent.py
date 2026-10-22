@@ -1,6 +1,5 @@
-"""Small local agent loop: Ollama proposes tools, Python executes them safely."""
+"""Investigation context and verified reports around the LangChain agent."""
 import json
-import inspect
 import os
 import re
 from time import monotonic
@@ -8,7 +7,7 @@ from typing import Any
 
 from duckdb import Error as DuckDBError
 
-from model_clients import ModelClient, ModelClientError, create_model_client
+from model_clients import ModelClient, create_model_client
 
 from agent_tools import (
     _validated_date, get_anomaly,
@@ -22,7 +21,7 @@ from agent_tools import (
 )
 
 MODEL = os.getenv("INCIDENT_MODEL", "qwen3:4b")
-BACKEND = os.getenv("INCIDENT_BACKEND", "native")
+BACKEND = os.getenv("INCIDENT_BACKEND", "langchain")
 MAX_TOOL_CALLS = 8
 MAX_RESULT_CHARS = 8000
 MAX_QUESTION_CHARS = 1000
@@ -30,7 +29,7 @@ MAX_HISTORY_EXCHANGES = 3
 MAX_HISTORY_CHARS = 2000
 MAX_CONTEXT_CHARS = 3500
 MAX_CHAT_REQUEST_CHARS = 12000
-# This allowlist is the execution boundary for both model adapters. No SQL,
+# This allowlist is the execution boundary for the LangChain agent. No SQL,
 # setup, shell, or filesystem functions are available to the model.
 TOOLS = {
     fn.__name__: fn for fn in (
@@ -340,8 +339,8 @@ def investigate(day: str, max_rounds: int = 7, *,
             "Call an additional tool of your choice to inspect category mix or order statuses now. /no_think"
         )},
     ]
-    assessment, trace = _run_model_loop(day, messages, trace, model_client, timeout,
-                                        max_rounds, report_context=context)
+    assessment, trace = _run_agent(day, messages, trace, model_client, timeout,
+                                   max_rounds, report_context=context)
     findings = _verified_findings(metrics, anomaly, history, comparisons, trace)
     return findings + "\n\n" + assessment, trace
 
@@ -493,8 +492,8 @@ def ask_agent(question: str, *, history: list[dict[str, Any]] | None = None,
     required = ("create_graph" if graph_request else
                 None if any(entry["tool"] in ("find_anomalies", "create_graph") for entry in evidence)
                 else ("find_anomalies", "create_graph"))
-    answer, trace = _run_model_loop(None, messages, trace, model_client, timeout, max_rounds,
-                                   chat_evidence=evidence, required_tool=required, current_question=question)
+    answer, trace = _run_agent(None, messages, trace, model_client, timeout, max_rounds,
+                              chat_evidence=evidence, required_tool=required, current_question=question)
     if _requests_graph(question) and not any(row["tool"] == "create_graph" and row["status"] == "ok" for row in trace):
         # Unknown dates can produce a clarification, never a text-only claim
         # that a graph was created. No tool execution is invented here.
@@ -514,7 +513,7 @@ def ask_agent(question: str, *, history: list[dict[str, Any]] | None = None,
 def discuss(day: str, question: str, *, investigation_trace: list[dict[str, Any]],
             history: list[dict[str, Any]] | None = None, max_rounds: int = 7,
             client: ModelClient | None = None) -> tuple[str, list[dict[str, Any]]]:
-    """Answer a follow-up, reusing session evidence and the bounded safe tool loop.
+    """Answer a follow-up, reusing session evidence through the LangChain runtime.
 
     investigation_trace/history come from server-owned session state. They are
     evidence and conversation data, never model messages with caller-chosen roles.
@@ -556,10 +555,10 @@ def discuss(day: str, question: str, *, investigation_trace: list[dict[str, Any]
         messages.extend([{"role": "user", "content": exchange["question"]},
                          {"role": "assistant", "content": exchange["answer"]}])
     messages.append({"role": "user", "content": question.strip()})
-    answer, trace = _run_model_loop(day, messages, trace, model_client, timeout, max_rounds,
-                                   chat_evidence=evidence,
-                                   required_tool="create_graph" if _requests_graph(question) else None,
-                                   current_question=question)
+    answer, trace = _run_agent(day, messages, trace, model_client, timeout, max_rounds,
+                              chat_evidence=evidence,
+                              required_tool="create_graph" if _requests_graph(question) else None,
+                              current_question=question)
     metrics = trace[1]["result"]
     evidence_lines = [f"- Refreshed selected-date baseline ({day}): R${metrics['item_sales']:,.2f} item sales; "
                       f"{metrics['orders']:,} distinct delivered orders."]
@@ -574,202 +573,23 @@ def discuss(day: str, question: str, *, investigation_trace: list[dict[str, Any]
     return answer + "\n\n### Database evidence\n\n" + "\n".join(evidence_lines), trace
 
 
-def _run_model_loop(day: str | None, messages: list[dict[str, Any]], trace: list[dict[str, Any]],
-                    model_client: ModelClient, timeout: float, max_rounds: int,
-                    *, report_context: dict | None = None,
-                    chat_evidence: list[dict[str, Any]] | None = None,
-                    required_tool: str | tuple[str, ...] | None = None,
-                    current_question: str | None = None) -> tuple[str, list[dict[str, Any]]]:
-    """Shared dispatch, validation, timeout, and retry rules for reports and chat."""
-    is_chat = report_context is None
-    required_tools = (required_tool,) if isinstance(required_tool, str) else required_tool or ()
-    graph_request = bool(current_question and _requests_graph(current_question))
-    graph_types = _requested_graph_types(current_question) if graph_request else set()
-    graph_range = _requested_iso_range(current_question) if graph_request else None
-    successful_calls = 0
-    attempted_calls = 0
-    format_retries = 0
-    last_comparisons = ""
-    # Also bound total time across rounds (each HTTP request has its own timeout).
-    deadline = monotonic() + timeout * 2
-
-    for round_number in range(1, max_rounds + 1):
-        # Fail explicitly on oversized follow-up transcripts instead of relying
-        # on Ollama to silently truncate evidence in its small model context.
-        if is_chat and len(json.dumps(messages, ensure_ascii=False)) > MAX_CHAT_REQUEST_CHARS:
-            raise InvestigationError("Chat context limit reached. Clear the conversation or ask a narrower question.", trace)
-        remaining = deadline - monotonic()
-        if remaining <= 0:
-            raise InvestigationError("Investigation time budget reached. Retry or use a faster local model.", trace)
-        try:
-            reply = model_client.invoke(messages, tools=list(TOOLS.values()),
-                                        timeout=min(timeout, remaining))
-        except ModelClientError as exc:
-            raise InvestigationError(f"Model round {round_number}: {exc}", trace) from exc
-
-        message = reply
-        if reply.done_reason == "length":
-            raise InvestigationError(
-                "Ollama reached the response token limit before completing. Retry; if this persists, "
-                "pull 'qwen3:4b-instruct' and set INCIDENT_MODEL=qwen3:4b-instruct. "
-                "Some qwen3:4b tags use thinking-only checkpoints that ignore think=False.", trace)
-        serialized = {"role": "assistant", "content": message.content}
-        if message.tool_calls:
-            serialized["tool_calls"] = [
-                {"name": call.name, "arguments": call.arguments, "id": call.id}
-                for call in message.tool_calls
-            ]
-        # Do not resend legacy reasoning embedded in content.
-        if "</think>" in (serialized.get("content") or ""):
-            serialized["content"] = serialized["content"].split("</think>", 1)[1].strip()
-        messages.append(serialized)
-        if not message.tool_calls:
-            needs_graph_dates = (required_tools == ("create_graph",) and
-                                 not _graph_scope_known(current_question or "", (chat_evidence or []) + trace))
-            if required_tools and not any(entry["source"] == "model" and entry["status"] == "ok"
-                                          and entry["tool"] in required_tools for entry in trace) and not needs_graph_dates:
-                messages.append({"role": "user", "content":
-                                 ("The user requested a graph. Call create_graph now using the requested metric "
-                                  "and dates from the question or actual evidence. Do not stop at proposing another query. /no_think"
-                                  if required_tools == ("create_graph",) else
-                                  "Call find_anomalies for discovery or create_graph for a requested graph "
-                                  "to retrieve actual evidence before answering. /no_think")})
-                continue
-            # Explanatory chat may use existing evidence. Once tools were attempted,
-            # require a successful result rather than hiding failures behind prose.
-            if successful_calls or (is_chat and attempted_calls == 0):
-                content = (message.content or "").strip()
-                # Older Qwen templates can return reasoning in content despite think=False.
-                if "</think>" in content:
-                    content = content.split("</think>", 1)[1].strip()
-                if not content or "<think>" in content:
-                    raise InvestigationError("Ollama returned an empty final report. Retry the investigation.", trace)
-                headings = (("### Answer", "### Unknowns and next checks") if is_chat else
-                            ("### Possible explanations", "### Confidence and next checks"))
-                if any(heading not in content for heading in headings):
-                    # Small models sometimes switch to report headings after a
-                    # discovery/investigation step. Allow one bounded repair;
-                    # collected evidence and the original system rules stay intact.
-                    if is_chat and format_retries == 0 and round_number < max_rounds:
-                        messages.append({"role": "user", "content":
-                                         "Rewrite the answer using exactly '### Answer' and "
-                                         "'### Unknowns and next checks'. Use the evidence already collected. "
-                                         "Do not repeat tool calls just to repair formatting. /no_think"})
-                        format_retries += 1
-                        continue
-                    raise InvestigationError("Ollama did not return the required report sections. Retry the investigation.", trace)
-                # The model can invent arithmetic despite correct tool results.
-                # Keep its qualitative assessment; render all Findings from evidence.
-                assessment = headings[0] + content.split(headings[0], 1)[1]
-                return assessment, trace
-            # Small local models sometimes ignore the first instruction to use a tool.
-            messages.append({
-                "role": "user",
-                "content": (f"Please call get_sales_by_category for {day} now before reporting. /no_think"
-                            if day else "Call find_anomalies to retrieve actual stored anomalies before answering. /no_think"),
-            })
-            continue
-
-        for tool_call in message.tool_calls:
-            if attempted_calls >= MAX_TOOL_CALLS:
-                raise InvestigationError(f"Model reached the {MAX_TOOL_CALLS}-tool-call limit without a final report. Retry.", trace)
-            name = tool_call.name
-            args = dict(tool_call.arguments)
-            fn = TOOLS.get(name)
-            status = "ok"
-            try:
-                if fn is None:
-                    raise ValueError(f"Unknown tool: {name}. Use one of {', '.join(TOOLS)}.")
-                # Validate parameter names before dispatch; each tool validates values.
-                inspect.signature(fn).bind(**args)
-                if name == "create_graph" and graph_types and args.get("graph_type") not in graph_types:
-                    raise ValueError(f"The current graph request needs graph_type in {', '.join(sorted(graph_types))}; "
-                                     f"received {args.get('graph_type')}. Follow the current question, not an earlier graph.")
-                if name == "create_graph" and graph_range and (
-                    args.get("start_date"), args.get("end_date") or args.get("start_date")
-                ) != graph_range:
-                    raise ValueError(f"The requested graph range is {graph_range[0]} through {graph_range[1]}. "
-                                     "Set both start_date and end_date to those dates.")
-                output = fn(**args)
-                if len(json.dumps(output, ensure_ascii=False)) > MAX_RESULT_CHARS:
-                    raise ValueError("Tool result is too large. Request a smaller limit.")
-                if output.get("found") is False:
-                    raise ValueError(f"No stored anomaly for {args.get('day')}.")
-            except (ValueError, TypeError, OSError, RuntimeError, DuckDBError) as exc:
-                # Return a structured error so the model may correct its arguments.
-                # Failed calls remain visible but never qualify as successful evidence.
-                status = "error"
-                output = {"error": f"{type(exc).__name__}: {exc}"}
-            trace.append({"source": "model", "round": round_number, "tool_call_id": tool_call.id, "tool": name,
-                          "arguments": args, "result": output, "status": status})
-            messages.append({
-                "role": "tool",
-                "tool_name": name,
-                "tool_call_id": tool_call.id,
-                "content": json.dumps(_model_tool_result(name, output) if status == "ok" else output,
-                                      ensure_ascii=False, default=str),
-            })
-            attempted_calls += 1
-            if status == "ok":
-                successful_calls += 1
-
-        if is_chat and successful_calls and not graph_request:
-            combined = (chat_evidence or []) + trace
-            comparisons = {"categories": _category_comparisons(day, combined),
-                           "daily_metrics": _daily_comparisons(combined) if day is None else []}
-            serialized_comparisons = json.dumps(comparisons, ensure_ascii=False)
-            if any(comparisons.values()) and serialized_comparisons != last_comparisons:
-                messages.append({"role": "user", "content": (
-                    "Comparisons computed by Python from actual tool results:\n"
-                    + serialized_comparisons
-                    + "\nUse these directions when comparing sales. Rank movement is not a sales decline. "
-                    "Use the computed weighted AOV comparison; never infer its direction from total sales. "
-                    "Categories missing from a limited list are unknown, not zero. "
-                    "Now answer the question with the required sections. /no_think"
-                )})
-                last_comparisons = serialized_comparisons
-            if day is None:
-                messages.append({"role": "user", "content": (
-                    f"Current user request: {current_question or 'Use the original question'}\n"
-                    "Continue satisfying this request with these actual results. "
-                    "If investigating, fetch any missing daily metrics, weekday history, or category evidence. "
-                    "When ready, write only '### Answer' and '### Unknowns and next checks'; "
-                    "use qualitative prose, as Python displays the numerical evidence and anomaly table. "
-                    + ("Calendar context: the investigated date was Black Friday. This is not proof of promotions or causation. "
-                       if any(entry["tool"] == "get_daily_metrics" and entry["status"] == "ok"
-                              and entry["arguments"].get("day") == "2017-11-24" for entry in trace) else "")
-                    + "/no_think"
-                )})
-
-        if is_chat and graph_request:
-            messages.append({"role": "user", "content": (
-                f"Current graph request: {current_question}\n"
-                "Use the requested graph type and dates from actual evidence. Once create_graph succeeds, "
-                "finish under 60 words using '### Answer' and '### Unknowns and next checks'. "
-                "Do not repeat prior graphs or run an unrelated investigation. /no_think"
-            )})
-
-        if not is_chat and successful_calls and messages[0]["content"] != SYSTEM_PROMPT:
-            # Transition from evidence collection to a qualitative assessment;
-            # Python renders the verified numerical Findings separately.
-            messages[0] = {"role": "system", "content": SYSTEM_PROMPT}
-            messages.append({"role": "user", "content": (
-                "Now write the concise final report using your tool results and these verified "
-                "database observations:\n" + json.dumps(report_context, ensure_ascii=False)
-                + ("\nCalendar context (not database evidence): 2017-11-24 was Black Friday. "
-                   "Mention this as a plausible explanation for volume, not proof of promotions "
-                   "or causation; promotional records are unavailable."
-                   if day == "2017-11-24" else "")
-                + "\nAvoid further tool calls unless essential. /no_think"
-            )})
-
-    if required_tools and not any(entry["source"] == "model" and entry["status"] == "ok"
-                                  and entry["tool"] in required_tools for entry in trace):
-        raise InvestigationError(f"The model did not execute a valid {' or '.join(required_tools)} call. "
-                                 "Retry the question; discovery and graphs require actual database results.", trace)
-    detail = ("The local model did not execute a valid model-selected tool."
-              if not successful_calls else "The round limit was reached before a final report.")
-    raise InvestigationError(detail + " Retry or select another tool-capable INCIDENT_MODEL. See the audit trail.", trace)
+def _run_agent(day: str | None, messages: list[dict[str, Any]], trace: list[dict[str, Any]],
+               model_client: ModelClient, timeout: float, max_rounds: int,
+               *, report_context: dict | None = None,
+               chat_evidence: list[dict[str, Any]] | None = None,
+               required_tool: str | tuple[str, ...] | None = None,
+               current_question: str | None = None) -> tuple[str, list[dict[str, Any]]]:
+    """Delegate all model/tool iteration to LangChain's agent runtime."""
+    try:
+        from langchain_runtime import run_agent
+    except ImportError as exc:
+        raise InvestigationError(
+            "LangChain agent dependencies are missing. Activate .venv and run "
+            "'python -m pip install -r requirements-mvp.txt'.", trace
+        ) from exc
+    return run_agent(day, messages, trace, model_client, timeout, max_rounds,
+                     report_context=report_context, chat_evidence=chat_evidence,
+                     required_tool=required_tool, current_question=current_question)
 
 
 if __name__ == "__main__":

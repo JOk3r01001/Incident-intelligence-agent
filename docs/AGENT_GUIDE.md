@@ -1,8 +1,8 @@
 # How the Incident Intelligence Agent works
 
 The agent helps you explore unusual sales days in historical Brazilian Olist
-e-commerce data. You ask questions in Streamlit. A local Ollama/Qwen model chooses
-analytical tools, Python validates and runs them against DuckDB, and the app
+e-commerce data. You ask questions in Streamlit. A LangChain agent uses a local
+Ollama/Qwen model to choose analytical tools, Python validates and runs them against DuckDB, and the app
 displays the returned evidence, graphs, and the model's interpretation.
 
 The statistical detector identifies unusual observations. The language model
@@ -34,7 +34,8 @@ flowchart TD
     CSV[Three local Olist CSVs] --> Setup[prepare_data.py: import + deterministic detector]
     Setup --> DB[(Persistent DuckDB)]
     User[Your question in Streamlit] --> Context[Dataset summary + bounded prior evidence/history]
-    Context --> Model[Local Ollama / Qwen through native or LangChain adapter]
+    Context --> Agent[LangChain create_agent]
+    Agent --> Model[ChatOllama / local Qwen]
     Model --> Proposal[Proposed tool name + structured arguments]
     Proposal --> Validate[Python allowlist + argument validation + limits]
     Validate --> Tools[Read-only analytical / graph tools]
@@ -194,21 +195,26 @@ Ollama hosts the local language model. The tested launch configuration selects
 `qwen3:4b`. On the tested machine that default tag is a mandatory-thinking
 checkpoint, which explained earlier long waits and reasoning leakage.
 
-`INCIDENT_BACKEND=native` uses the Ollama Python client directly.
-`INCIDENT_BACKEND=langchain` uses the optional `ChatOllama` adapter to translate
-messages, bind tool schemas, and normalize replies. Both return the same
-`ModelReply`/`ToolCall` contract to the existing Python loop. Python still owns
-tool execution, validation, and the detector; both adapters use the same local
-Qwen weights. Factual correctness still requires grounding in query results.
-Tracing is disabled during LangChain invocations.
+LangChain is the only backend and is selected by default. Its `create_agent`
+runtime controls model/tool iteration; `ChatOllama` handles local model requests.
+Application middleware enforces tool validation, budgets, trace logging, evidence
+requirements, and report formatting. The former native client and custom Ollama
+loop have been removed. An old `INCIDENT_BACKEND=native` setting must be removed
+or changed to `langchain` before restarting the application.
+
+Ollama remains the local model server. LangChain includes LangGraph as an internal
+dependency; no separate graph service is required. LangSmith tracing is disabled
+around the complete agent invocation. Factual correctness still requires grounding
+in query results.
 
 | File | Responsibility |
 | --- | --- |
 | `src/app.py` | Workspaces, session state, reports, chart rendering, and audit display |
-| `src/incident_agent.py` | Prompts, bounded context, tool dispatch, retries, verified evidence formatting |
+| `src/incident_agent.py` | Prompts, bounded context, seeded lookups, verified evidence formatting |
+| `src/langchain_runtime.py` | LangChain agent runtime and validation/evidence/budget middleware |
 | `src/agent_tools.py` | Read-only parameterized analytics and chart-data creation |
-| `src/model_clients.py` | Shared model contract, backend selection, native Ollama client |
-| `src/langchain_client.py` | Optional LangChain/Ollama message and response adapter |
+| `src/model_clients.py` | Reply types, injectable test-client contract, LangChain-only client selection |
+| `src/langchain_client.py` | ChatOllama message conversion, single model requests, and error handling |
 | `src/prepare_data.py` | Safe CSV import and deterministic anomaly calculation for new databases |
 | `tests/` (local-only) | Temporary-database/fake-model tests and separate opt-in live tests; excluded from the published repository |
 
@@ -240,11 +246,11 @@ Tracing is disabled during LangChain invocations.
 
 ## Launch and verify
 
-From the repository root, for the optional LangChain backend:
+From the repository root:
 
 ```bash
 source .venv/bin/activate
-python -m pip install -r requirements-langchain.txt
+python -m pip install -r requirements-mvp.txt
 python src/prepare_data.py
 ollama list
 export INCIDENT_MODEL=qwen3:4b-instruct
@@ -253,8 +259,7 @@ python -m streamlit run src/app.py --server.address 127.0.0.1
 ```
 
 Open http://localhost:8501. If needed, start `ollama serve` in another terminal
-and pull the model with `ollama pull qwen3:4b-instruct`. For the native backend,
-install `requirements-mvp.txt` and use `INCIDENT_BACKEND=native`.
+and pull the model with `ollama pull qwen3:4b-instruct`.
 Restart Streamlit after changing environment variables.
 
 For a fresh installation, run `python src/incident_agent.py 2017-11-24` to check
@@ -263,8 +268,7 @@ are not included in the published repository.
 
 ```bash
 python -m unittest discover -s tests -v
-INCIDENT_MODEL=qwen3:4b-instruct INCIDENT_BACKEND=native python tests/live_graphs.py
-INCIDENT_MODEL=qwen3:4b-instruct INCIDENT_BACKEND=langchain python tests/live_graphs.py
+INCIDENT_MODEL=qwen3:4b-instruct python tests/live_graphs.py
 ```
 
 Offline tests use temporary databases and fake model replies. The opt-in graph
@@ -273,8 +277,8 @@ reference-based follow-up graphs, and checks the actual chart payload values,
 session persistence, and unchanged database hash. Streamlit AppTest exercises
 the Python runtime/chart payloads, rather than browser pixel layout.
 
-Recorded verification on October 22, 2026: **113 offline tests passed**. The real
-three-graph flow passed with `qwen3:4b-instruct` through LangChain (14.3 seconds)
-and native Ollama (13.5 seconds), with plotted values checked against the returned
-database observations and the database SHA256 unchanged. These are individual
-measurements, not a controlled benchmark or an assurance about model-written claims.
+The LangChain-only runtime passed **120 offline tests** on October 22, 2026.
+Real `qwen3:4b-instruct` tests also passed for reports and follow-ups (16.4 seconds),
+chat-first discovery/investigation (14.1 seconds), and the three-graph flow
+(12.3 seconds), preserving database hashes and rerun state. See
+[LANGCHAIN.md](LANGCHAIN.md) for the current architecture and verification scope.

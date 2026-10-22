@@ -47,8 +47,8 @@ def render_agent_guide() -> None:
                  "and final order statuses, for up to 90 days and 15 categories/statuses. "
                  "Try: ‘Plot daily sales for November 2017’ or ‘Graph the top categories for that day.’")
         st.caption("Dataset coverage/counts are seeded context; source=model identifies tools selected "
-                   "by Qwen. Conversation memory is limited and session-only. Native Ollama and optional "
-                   "LangChain use the same local model and validated tool loop. Campaign causes, profit, "
+                   "by Qwen. Conversation memory is limited and session-only. LangChain orchestrates "
+                   "the local model and validated tools. Campaign causes, profit, "
                    "delivery delays, and live incidents cannot be established from these tools alone.")
 
 
@@ -83,7 +83,7 @@ def agent_workspace() -> None:
     except Exception as exc:
         st.error(f"Could not open the dataset: {exc}")
         st.info("Run `python src/prepare_data.py` to prepare an absent database from the Olist CSVs. "
-                "Existing databases are checked read-only. See README-MVP.md.")
+                "Existing databases are checked read-only. See README.md.")
         st.stop()
     st.caption(f"Historical coverage: {summary['first_order_date']} to {summary['last_order_date']} · "
                f"{summary['stored_anomalies']:,} stored statistical flags · Item sales exclude freight.")
@@ -117,9 +117,9 @@ def agent_workspace() -> None:
     render_agent_guide()
     st.caption("Historical Olist data · Statistical anomalies are not automatically business incidents.")
 
-st.set_page_config(page_title="Incident Intelligence", page_icon="🔎", layout="wide")
-st.title("🔎 Incident Intelligence Agent")
-st.caption(f"Local anomaly investigation · DuckDB + Ollama ({MODEL}; {BACKEND})")
+st.set_page_config(page_title="Incident Intelligence", layout="wide")
+st.title("Incident Intelligence Agent")
+st.caption(f"Local anomaly investigation · DuckDB + LangChain + Ollama ({MODEL}; {BACKEND})")
 
 # Conversation is the default entry point. The original dashboard remains an
 # optional workspace for inspecting a known date, rather than a prerequisite.
@@ -132,11 +132,11 @@ try:
     rows = list_anomalies()
 except Exception as exc:
     st.error(f"Could not load anomalies: {exc}")
-    st.info("Run `python src/prepare_data.py` to prepare an absent database from CSVs or check an existing database read-only. For an incomplete database, restore a prepared copy or build to a new path. See README-MVP.md.")
+    st.info("Run `python src/prepare_data.py` to prepare an absent database from CSVs or check an existing database read-only. For an incomplete database, restore a prepared copy or build to a new path. See README.md.")
     st.stop()
 
 if not rows:
-    st.warning("No saved anomalies. A valid dataset can have no deviations above the detector threshold. Run `python src/prepare_data.py` to inspect row counts; see README-MVP.md to prepare a separate database from CSVs.")
+    st.warning("No saved anomalies. A valid dataset can have no deviations above the detector threshold. Run `python src/prepare_data.py` to inspect row counts; see README.md to prepare a separate database from CSVs.")
     st.stop()
 
 # Store actual dates as widget values; formatted labels are only for display.
@@ -194,7 +194,7 @@ if result and result["date"] == selected:
         st.error(f"Investigation failed: {result['error']}")
     elif result["report"]:
         st.success(f"Investigation completed for {selected} in {result.get('elapsed_seconds', 0):.1f}s "
-                   f"with {result.get('model', MODEL)} via {result.get('backend', 'native')}.")
+                   f"with {result.get('model', MODEL)} via {result.get('backend', 'unknown')}.")
         st.subheader("Investigation report")
         st.markdown(result["report"])
     trace = result["trace"]
@@ -213,7 +213,7 @@ if result and result["date"] == selected:
         if st.button("Clear conversation", key=f"clear_chat_{selected}"):
             conversation.clear()
 
-        same_model = result.get("model") == MODEL and result.get("backend", "native") == BACKEND
+        same_model = result.get("model") == MODEL and result.get("backend") == BACKEND
         if not same_model:
             st.info("Run the investigation again with the current model/backend to start a new conversation.")
         question = st.chat_input("Ask a follow-up about this anomaly…", max_chars=MAX_QUESTION_CHARS,

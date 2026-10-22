@@ -1,4 +1,4 @@
-"""Optional LangChain transport. The bounded investigation loop still owns tools."""
+"""Local ChatOllama transport used by the LangChain agent runtime."""
 from typing import Any, Callable, Sequence
 from uuid import uuid4
 
@@ -14,15 +14,15 @@ class LangChainOllamaClient:
 
     def invoke(self, messages: list[dict[str, Any]], *, tools: Sequence[Callable],
                timeout: float) -> ModelReply:
-        # Optional dependencies must not affect the native-only installation.
+        # Keep an actionable error if the environment has not been upgraded.
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
             from langchain_ollama import ChatOllama
             from langsmith import tracing_context
         except ImportError as exc:
             raise ModelClientError(
-                "LangChain integration is unavailable. Activate .venv and run "
-                "'python -m pip install -r requirements-langchain.txt', or set INCIDENT_BACKEND=native."
+                "LangChain is required. Activate .venv and run "
+                "'python -m pip install -r requirements-mvp.txt'."
             ) from exc
 
         try:
