@@ -1,5 +1,9 @@
 # How the Incident Intelligence Agent works
 
+This guide describes the dedicated Olist workspace. The
+[configured business workspace](../README.md#configured-business-datasets) uses
+five reusable tools and operator-defined metrics across different prepared datasets.
+
 The agent helps you explore unusual sales days in historical Brazilian Olist
 e-commerce data. You ask questions in Streamlit. A LangChain agent uses a local
 Ollama/Qwen model to choose analytical tools, Python validates and runs them against DuckDB, and the app

@@ -413,7 +413,14 @@ def _saved_evidence(seeds: list[dict[str, Any]], initial: list[dict[str, Any]],
 
 def _model_tool_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
     """Keep every graph point in the audit/UI, but send a small preview to Qwen."""
-    if name != "create_graph":
+    if name in ("query_metric", "compare_metric_periods", "find_metric_anomalies", "create_metric_graph"):
+        # SQL belongs in the audit, not the model context: the model neither
+        # generates nor executes it. Retain complete queries in the original trace.
+        result = {key: value for key, value in result.items() if key not in ("query", "queries")}
+    if name == "query_metric" and len(result.get("rows", [])) > 5:
+        return {**{key: value for key, value in result.items() if key != "rows"},
+                "rows_preview": result["rows"][:5], "preview_is_partial": True}
+    if name not in ("create_graph", "create_metric_graph"):
         return result
     return {**{key: value for key, value in result.items() if key != "data"},
             "data_preview": result["data"][:5], "preview_is_partial": len(result["data"]) > 5}

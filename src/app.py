@@ -1,5 +1,6 @@
 """Minimal Streamlit interface for the Incident Intelligence MVP."""
 from time import monotonic
+import os
 
 import pandas as pd
 import streamlit as st
@@ -15,7 +16,7 @@ def render_graphs(trace: list[dict]) -> None:
     as charts. The result data lives in session state with the reply's audit log.
     """
     for entry in trace:
-        if entry["source"] != "model" or entry["status"] != "ok" or entry["tool"] != "create_graph":
+        if entry["source"] != "model" or entry["status"] != "ok" or entry["tool"] not in ("create_graph", "create_metric_graph"):
             continue
         graph = entry["result"]
         st.markdown(f"**{graph['title']}**")
@@ -28,7 +29,9 @@ def render_graphs(trace: list[dict]) -> None:
             st.line_chart(df.set_index(graph["x"])[graph["y"]], y_label=graph["y_label"])
         else:
             st.bar_chart(df.set_index(graph["x"])[graph["y"]], y_label=graph["y_label"])
-        st.caption(graph["note"] + (" Additional categories/statuses were omitted by the requested limit."
+        st.caption(graph["note"] + ((" Additional groups were omitted by the requested limit."
+                                    if entry["tool"] == "create_metric_graph" else
+                                    " Additional categories/statuses were omitted by the requested limit.")
                                     if graph["truncated"] else ""))
 
 
@@ -120,6 +123,11 @@ def agent_workspace() -> None:
 st.set_page_config(page_title="Incident Intelligence", layout="wide")
 st.title("Incident Intelligence Agent")
 st.caption(f"Local anomaly investigation · DuckDB + LangChain + Ollama ({MODEL}; {BACKEND})")
+
+if os.getenv("INCIDENT_DATASET_CONFIG"):
+    from business_ui import business_workspace
+    business_workspace(os.environ["INCIDENT_DATASET_CONFIG"], render_graphs)
+    st.stop()
 
 # Conversation is the default entry point. The original dashboard remains an
 # optional workspace for inspecting a known date, rather than a prerequisite.

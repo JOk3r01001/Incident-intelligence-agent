@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "id": "olist",
+  "name": "Olist delivered item sales",
+  "description": "Historical Brazilian e-commerce. Final delivered orders grouped by purchase date. Item sales exclude freight and are not accounting revenue or profit.",
+  "database": "../data/incident_intelligence.duckdb",
+  "default_metric": "item_sales",
+  "tables": {
+    "items": {"table": "order_items", "grain": ["order_id", "order_item_id"]},
+    "orders": {"table": "orders", "grain": ["order_id"]},
+    "products": {"table": "products", "grain": ["product_id"]}
+  },
+  "joins": {
+    "item_orders": {"left": "items.order_id", "right": "orders.order_id", "kind": "inner"},
+    "item_products": {"left": "items.product_id", "right": "products.product_id", "kind": "left"}
+  },
+  "metrics": {
+    "item_sales": {
+      "label": "Delivered item sales", "description": "Sum of delivered-order item prices, excluding freight; not recognized accounting revenue or profit.",
+      "source": "items", "joins": ["item_orders", "item_products"], "date": "orders.order_purchase_timestamp",
+      "calculation": {"aggregation": "sum", "column": "items.price"}, "unit": "BRL", "precision": 2,
+      "filters": [{"column": "orders.order_status", "value": "delivered"}],
+      "dimensions": {"category": "products.product_category_name"}
+    },
+    "delivered_orders": {
+      "label": "Distinct delivered orders", "description": "Distinct delivered orders with item records. Counts across product categories can overlap.",
+      "source": "items", "joins": ["item_orders", "item_products"], "date": "orders.order_purchase_timestamp",
+      "calculation": {"aggregation": "count_distinct", "column": "items.order_id"}, "unit": "orders", "precision": 0,
+      "filters": [{"column": "orders.order_status", "value": "delivered"}],
+      "dimensions": {"category": "products.product_category_name"}
+    },
+    "average_order_value": {
+      "label": "Delivered average order value", "description": "Delivered item sales divided by distinct delivered orders with item records; excludes freight.",
+      "source": "items", "joins": ["item_orders", "item_products"], "date": "orders.order_purchase_timestamp",
+      "calculation": {"aggregation": "ratio", "numerator": {"aggregation": "sum", "column": "items.price"}, "denominator": {"aggregation": "count_distinct", "column": "items.order_id"}},
+      "unit": "BRL per order", "precision": 2,
+      "filters": [{"column": "orders.order_status", "value": "delivered"}],
+      "dimensions": {"category": "products.product_category_name"}
+    }
+  }
+}

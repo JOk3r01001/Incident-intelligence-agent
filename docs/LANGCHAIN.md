@@ -40,6 +40,8 @@ explicitly disabled around the entire agent run, including model and tool calls.
 | `src/langchain_client.py` | Single-request ChatOllama transport, linked message conversion, model errors, connection cleanup |
 | `src/model_clients.py` | Reply types, injectable test-client contract, and LangChain-only client selection |
 | `src/agent_tools.py` | Fixed read-only, parameterized DuckDB analytics and graph data |
+| `src/dataset_config.py`, `src/business_tools.py` | Strict operator-owned dataset definitions and reusable SQL-backed metric tools |
+| `src/business_agent.py`, `src/business_ui.py` | Dataset-independent prompt, isolated conversation context, and numerical evidence rendering |
 
 `investigate(day, max_rounds=7, *, client=None)` prepares three deterministic
 lookups, then starts the LangChain agent. Its report requires a successful
@@ -62,6 +64,29 @@ uses ChatOllama; tests can inject fake replies through the same boundary while
 exercising the real LangChain agent runtime and real temporary-database tools.
 LangChain owns routing from model proposals to its tool node and back to the
 model. There is no application `for`/`while` loop repeatedly calling Ollama.
+
+`ask_business(question, analytics, *, history=None, max_rounds=7, client=None)`
+uses the same runtime with an explicit registry of business tools instead of the
+Olist allowlist. Both registries remain closed execution boundaries; business
+requests cannot dispatch Olist tools or arbitrary SQL. One catalogue lookup is
+labeled seeded. A fresh answer requires a model-selected tool; later explanations
+can reuse saved evidence. Clear requests for graphs, anomaly discovery, comparisons,
+or named breakdowns must obtain those results in the current turn before finishing.
+A missing metric or date can instead produce an explicitly labeled clarification.
+The return value is a `BusinessReport` with separate `answer`, `trace`, and
+`model_commentary` fields. Python constructs `answer` directly from successful
+tool results. Unverified generated prose appears in a separate collapsed UI
+expander and is never used as numerical findings or saved database evidence.
+
+The configured business path supplies compact query results to Qwen, keeping SQL
+templates/parameters in the complete UI trace. Graphs and long series use previews.
+Its tools enforce a separate 10-second timeout per read-only SQL statement and
+validate record grain and join keys before querying. See the
+[business configuration instructions](../README.md#configured-business-datasets).
+The business path omits prior assistant interpretations and intermediate prose
+from model context, while retaining linked tool proposals/results. Clear metric
+value requests cannot inherit a prior dimension grouping, and relative weekday
+comparisons are checked before SQL execution.
 
 ## Middleware and execution boundaries
 
@@ -124,6 +149,13 @@ not latency guarantees. Dependency consistency and Python compilation also passe
 
 For a fresh installation, use the CLI command in the launch instructions and
 `python -m pip check`. Neither requires the private test files.
+
+The configured business extension was verified on October 28, 2026 with **155
+offline tests** and real model-selected Olist and warehouse workflows, including
+rendered chart values, reference-based dates, correct overall weighted ratios,
+and unchanged database hashes. Their measured times were 23.9 and 20.0 seconds.
+Tests deliberately inject contradictory model claims and verify that Python's
+factual report remains correct while the raw model commentary stays separate.
 
 Reference: [LangChain agents](https://docs.langchain.com/oss/python/langchain/agents)
 and [custom middleware](https://docs.langchain.com/oss/python/langchain/middleware/custom).

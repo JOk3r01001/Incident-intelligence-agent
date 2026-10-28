@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "id": "warehouse_demo",
+  "name": "Warehouse operations — synthetic demo",
+  "description": "Synthetic daily warehouse shifts. One row per shift; units and handling minutes describe operations rather than sales or orders.",
+  "database": "../data/warehouse_demo.duckdb",
+  "default_metric": "units_shipped",
+  "tables": {"shifts": {"table": "warehouse_shifts", "grain": ["shift_id"]}},
+  "metrics": {
+    "units_shipped": {
+      "label": "Units shipped", "description": "Total units shipped during completed warehouse shifts.",
+      "source": "shifts", "date": "shifts.work_date", "calculation": {"aggregation": "sum", "column": "shifts.shipped_units"},
+      "unit": "units", "precision": 0, "filters": [{"column": "shifts.completed", "value": true}],
+      "dimensions": {"warehouse": "shifts.warehouse"}
+    },
+    "completed_shifts": {
+      "label": "Completed shifts", "description": "Number of completed shifts, at the configured one-row-per-shift grain.",
+      "source": "shifts", "date": "shifts.work_date", "calculation": {"aggregation": "count"},
+      "unit": "shifts", "precision": 0, "filters": [{"column": "shifts.completed", "value": true}],
+      "dimensions": {"warehouse": "shifts.warehouse"}
+    },
+    "handling_time_per_unit": {
+      "label": "Handling minutes per shipped unit", "description": "Total handling minutes divided by total shipped units for completed shifts. This is a weighted rate, not an average of per-shift averages.",
+      "source": "shifts", "date": "shifts.work_date",
+      "calculation": {"aggregation": "ratio", "numerator": {"aggregation": "sum", "column": "shifts.handling_minutes"}, "denominator": {"aggregation": "sum", "column": "shifts.shipped_units"}},
+      "unit": "minutes per unit", "precision": 3, "filters": [{"column": "shifts.completed", "value": true}],
+      "dimensions": {"warehouse": "shifts.warehouse"}
+    }
+  }
+}
